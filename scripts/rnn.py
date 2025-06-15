@@ -41,11 +41,8 @@ class RNN(nn.Module):
             print("NaN detected in input!")
 
         _,h = self.encoder(gloss_emb) #(D*2,B,H) Get the last hidden state from the encoder
-
         h = torch.cat((h[-2], h[-1]), dim=-1)  # Concatenate [B, H*2] from both directions
-
         h = h.unsqueeze(1).repeat(1, frame_length, 1)  # [B,T,H] Repeat the hidden state for each time step
-
         hidden = None
 
         pose = []

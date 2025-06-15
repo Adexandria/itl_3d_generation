@@ -6,7 +6,7 @@ from transformers import BertTokenizer, BertModel
 from pytorch3d import transforms 
 import os  
 
-#torch.serialization.register_package(0, lambda x: x.device.type, lambda x, _: x.cpu())
+torch.serialization.register_package(0, lambda x: x.device.type, lambda x, _: x.cpu())
 
 class PoseDataset(Dataset):
     def __init__(self, gloss_file, device='cpu'):

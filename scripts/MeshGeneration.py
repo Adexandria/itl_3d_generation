@@ -49,9 +49,13 @@ class MeshGenerator:
 
         pose_dataset = PoseDataset(gloss_file=self.gloss_file, device=self.device)
 
-        gloss_embedding,frame_length =  pose_dataset.get_glosses(self.text)
+        gloss_embedding,frame_length =  pose_dataset.get_dataset(self.text)
 
-        output = itl3d_model(gloss_embedding,frame_length)
+        gloss_embedding = gloss_embedding.unsqueeze(0).unsqueeze(1).repeat(1, frame_length, 1) 
+
+        print(f"Gloss embedding shape: {gloss_embedding.shape}, Frame length: {frame_length}")
+        
+        output = itl3d_model.forward_single(gloss_embedding,frame_length)
 
         transformed_output = self.transform_pose(output)
         
@@ -75,7 +79,7 @@ class MeshGenerator:
 
         print("camera shape", camera.shape)
 
-        B = vertices[0]  # Number of samples
+        B = frame_length
 
         print(f'Number of samples: {B}')
 
@@ -144,7 +148,10 @@ class MeshGenerator:
         return model
     
     def transform_pose(self, reconstructed_pose):
-        reconstructed_pose = reconstructed_pose[:0,:]
+        if reconstructed_pose is None or torch.numel(reconstructed_pose) == 0:
+            raise ValueError("Reconstructed pose is empty or None")
+        reconstructed_pose = reconstructed_pose.squeeze(0)  # Ensure it has the correct shape
+        print(f"Reconstructed pose shape: {reconstructed_pose.shape}")
         betas            = reconstructed_pose[:, :10]
         expression       = reconstructed_pose[:, 10:20]
         go_aa            = reconstructed_pose[:, 20:23]
@@ -156,7 +163,27 @@ class MeshGenerator:
         right_eye_pose   = reconstructed_pose[:, 182:185]
         camera_ts        = reconstructed_pose[:, 185:188]
         
-
+        if betas.ndim is None or torch.numel(betas) == 0:
+            print("Betas tensor is empty or None")
+        
+        if expression.ndim is None or torch.numel(expression) == 0:
+            print("Expression tensor is empty or None")      
+        if go_aa.ndim is None or torch.numel(go_aa) == 0:
+            print("Global orientation tensor is empty or None")
+        if bp_aa.ndim is None or torch.numel(bp_aa) == 0:
+            print("Body pose tensor is empty or None")           
+        if jaw_pose.ndim is None or torch.numel(jaw_pose) == 0:
+            print("Jaw pose tensor is empty or None")
+        if left_hand_pose.ndim is None or torch.numel(left_hand_pose) == 0:
+            print("Left hand pose tensor is empty or None")
+        if right_hand_pose.ndim is None or torch.numel(right_hand_pose) == 0:
+            print("Right hand pose tensor is empty or None")
+        if left_eye_pose.ndim is None or torch.numel(left_eye_pose) == 0:
+            print("Left eye pose tensor is empty or None")
+        if right_eye_pose.ndim is None or torch.numel(right_eye_pose) == 0:
+            print("Right eye pose tensor is empty or None")
+        if camera_ts.ndim is None or torch.numel(camera_ts) == 0:
+            print("Camera tensor is empty or None") 
         return {
             'betas': betas,
             'expression': expression,
