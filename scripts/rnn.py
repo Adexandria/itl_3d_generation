@@ -5,13 +5,14 @@ class RNN(nn.Module):
     def __init__(self, gloss_dim, output_dim, hidden_dim):
         super().__init__()
         self.pose_dim = output_dim
+        self.layer_norm = nn.LayerNorm(hidden_dim)
         self.initial_pose = torch.zeros((1, 1, output_dim))
         self.encoder = nn.GRU(
             input_size=gloss_dim,
             hidden_size=hidden_dim,
             bidirectional=True,
             batch_first=True,
-            dropout=0.1,    
+            dropout=0.2,    
             num_layers=2
         )  
         # Start token for pose
@@ -23,30 +24,44 @@ class RNN(nn.Module):
 
         self.fc = nn.Linear(hidden_dim, output_dim)
 
-    
+    # for batch forward pass
     def forward(self, gloss_emb): 
         if torch.isnan(gloss_emb).any():
             print("NaN detected in input!")
 
         T = gloss_emb.size(1)  # Get the number of time steps
-        _,h = self.encoder(gloss_emb) #(D*2,B,H) Get the last hidden state from the encoder
-        h = torch.cat((h[-2], h[-1]), dim=-1)  # Concatenate [B, H*2] from both directions
-        h = h.unsqueeze(1).repeat(1, T, 1)  # [B,T,H] Repeat the hidden state for each time step
-        hidden = None
-        pose = []
-        t_pose = self.initial_pose.repeat(gloss_emb.size(0), 1, 1)  # Initialize pose with zeros [B,1, output_dim]
 
-        for i in range(T):
+        output =self.forward_single(gloss_emb, T)  # Call the single forward pass method
+           
+        return output
+        
+    
+    def forward_single(self, gloss_emb, frame_length):
+        if torch.isnan(gloss_emb).any():
+            print("NaN detected in input!")
+
+        _,h = self.encoder(gloss_emb) #(D*2,B,H) Get the last hidden state from the encoder
+
+        h = torch.cat((h[-2], h[-1]), dim=-1)  # Concatenate [B, H*2] from both directions
+
+        h = h.unsqueeze(1).repeat(1, frame_length, 1)  # [B,T,H] Repeat the hidden state for each time step
+
+        hidden = None
+
+        pose = []
+
+        t_pose = self.initial_pose.repeat(gloss_emb.size(0), 1, 1).to(h.device)  # Initialize pose with zeros [B,1, output_dim]
+
+        for i in range(frame_length):
             input  = torch.cat([t_pose, h[:, i:i+1, :]], dim=-1)  # Concatenate pose and hidden state [B, 1, output_dim + H*2]
             output,hidden = self.decoder(input,hidden)  # [B, 1, H]
-            next_pose = self.fc(output)  # [B, 1, output_dim]
+            normalized_output = self.layer_norm(output) 
+            next_pose = self.fc(normalized_output)  # [B, 1, output_dim]
             pose.append(next_pose)  # Append the predicted pose
             t_pose = next_pose # Update t_pose for the next iteration
-           
         
         out_pose = torch.cat(pose, dim=1)  # Concatenate all predicted poses [B, T, output_dim]
         return out_pose
-    
 
     def train_loss(self,input, target,mask):
         if torch.isnan(input).any():

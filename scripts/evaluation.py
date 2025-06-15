@@ -16,14 +16,18 @@ class evaluate_model:
                 if gloss_embedding is None or keypoint is None or mask is None:
                         print("Skipping batch with None values")
                         continue 
+                # Repeat gloss embedding across time steps
                 gloss_embedding = gloss_embedding.unsqueeze(1).repeat(1, keypoint.size(1), 1) 
+
+                # Move tensors to the specified device
                 gloss_embedding = gloss_embedding.to(self.device)
                 keypoint = keypoint.to(self.device)
                 mask = mask.to(self.device)
+
                 reconstructed = self.model(gloss_embedding)
                 num_samples += 1
                 avg_loss = self.model.evaluation_loss(reconstructed, keypoint,mask)
-
+                
                 total_loss += avg_loss.item()
         
         avg_loss = total_loss / num_samples

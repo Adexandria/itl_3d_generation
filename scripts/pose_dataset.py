@@ -6,7 +6,7 @@ from transformers import BertTokenizer, BertModel
 from pytorch3d import transforms 
 import os  
 
-torch.serialization.register_package(0, lambda x: x.device.type, lambda x, _: x.cpu())
+#torch.serialization.register_package(0, lambda x: x.device.type, lambda x, _: x.cpu())
 
 class PoseDataset(Dataset):
     def __init__(self, gloss_file, device='cpu'):
@@ -39,19 +39,11 @@ class PoseDataset(Dataset):
         # Get gloss embedding
         gloss_embedding = self.get_glosses(gloss).to(self.device)
 
-        keypoints_path = item['keypoints']
-        pkl_path = os.path.join(self.path, keypoints_path)
-        pkl_path = os.path.normpath(pkl_path)  # Normalize the path
-        
-        try:
-            with open(pkl_path, 'rb') as f:
-                keypoints = pickle.load(f)  
-        except FileNotFoundError:
+        frame_length = item['frame_count']
+        if frame_length is None:
             return None,None
         
-        pose_vector = self.__transform_keypoints__(keypoints)
-        
-        return gloss_embedding,pose_vector
+        return gloss_embedding, frame_length
 
     def __getitem__(self, idx):
         gloss = self.data[idx]['gloss']

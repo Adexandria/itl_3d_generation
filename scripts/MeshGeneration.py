@@ -49,9 +49,9 @@ class MeshGenerator:
 
         pose_dataset = PoseDataset(gloss_file=self.gloss_file, device=self.device)
 
-        gloss_embedding, keypoints =  pose_dataset.get_dataset(self.text)
+        gloss_embedding,frame_length =  pose_dataset.get_glosses(self.text)
 
-        output = itl3d_model(gloss_embedding,keypoints)
+        output = itl3d_model(gloss_embedding,frame_length)
 
         transformed_output = self.transform_pose(output)
         
