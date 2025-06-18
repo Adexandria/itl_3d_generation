@@ -98,6 +98,7 @@ class PoseDataset(Dataset):
 
         betas            = betas.to(self.device) # [B,10]
         expression       = expression.to(self.device) # [B,10]
+        camera_ts = camera_ts.to(self.device)  # [B,3]
             
 
         pose_array = [

@@ -1,12 +1,13 @@
 from torch import nn
-from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import torch
+import math
+import random
 class RNN(nn.Module):
     def __init__(self, gloss_dim, output_dim, hidden_dim):
         super().__init__()
         self.pose_dim = output_dim
         self.layer_norm = nn.LayerNorm(hidden_dim)
-        self.initial_pose = torch.zeros((1, 1, output_dim))
+        self.initial_pose = nn.Parameter(torch.zeros((1, 1, output_dim)))
         self.encoder = nn.GRU(
             input_size=gloss_dim,
             hidden_size=hidden_dim,
@@ -21,20 +22,53 @@ class RNN(nn.Module):
             hidden_size=hidden_dim,
             batch_first=True
         )
-
         self.fc = nn.Linear(hidden_dim, output_dim)
 
-    # for batch forward pass
-    def forward(self, gloss_emb): 
+
+    # for batch forward pass for validation and testing
+   
+
+    # for batch forward pass for training
+    def forward(self, gloss_emb, ground_truth, epoch, total_epochs): 
+        if torch.isnan(gloss_emb).any():
+            print("NaN detected in input!")
+
+        # Get the number of time steps
+        T = gloss_emb.size(1) 
+        
+        _,h = self.encoder(gloss_emb) #(D*2,B,H) Get the last hidden state from the encoder
+        h = torch.cat((h[-2], h[-1]), dim=-1)  # Concatenate [B, H*2] from both directions
+        h = h.unsqueeze(1).repeat(1, T, 1)  # [B,T,H] Repeat the hidden state for each time step
+        
+        # using inverse sigmoid decay
+        p_tf = (total_epochs / (total_epochs + math.exp(epoch/total_epochs))) # i want to start from 1 and slowly reduce to 0. following full teacher force to autorgressive  
+        hidden = None
+        prev_pose = ground_truth[:,:1,:]
+        poses = []
+        for i in range(T):
+            input  = torch.cat([prev_pose, h[:, i:i+1, :]], dim=-1)  # Concatenate pose and hidden state [B, 1, output_dim + H*2]
+            output,hidden = self.decoder(input,hidden)  # [B, 1, H]
+            normalized_output = self.layer_norm(output) 
+            next_pose = self.fc(normalized_output)  # [B, 1, output_dim] 
+            poses.append(next_pose)  # Append the predicted pose
+            
+            if random.random() < p_tf:
+                prev_pose = ground_truth[:, i:i+1, :]  
+            else:
+                prev_pose = next_pose
+        
+        output = torch.cat(poses, dim=1)  # Concatenate all predicted poses [B, T, output_dim]
+        return output,p_tf
+    
+    def forward_autoregression(self, gloss_emb): 
         if torch.isnan(gloss_emb).any():
             print("NaN detected in input!")
 
         T = gloss_emb.size(1)  # Get the number of time steps
 
-        output =self.forward_single(gloss_emb, T)  # Call the single forward pass method
+        output = self.forward_single(gloss_emb, T)  # Call the single forward pass method
            
         return output
-        
     
     def forward_single(self, gloss_emb, frame_length):
         if torch.isnan(gloss_emb).any():
@@ -43,30 +77,30 @@ class RNN(nn.Module):
         _,h = self.encoder(gloss_emb) #(D*2,B,H) Get the last hidden state from the encoder
         h = torch.cat((h[-2], h[-1]), dim=-1)  # Concatenate [B, H*2] from both directions
         h = h.unsqueeze(1).repeat(1, frame_length, 1)  # [B,T,H] Repeat the hidden state for each time step
-        hidden = None
 
         pose = []
-
+        hidden = None
         t_pose = self.initial_pose.repeat(gloss_emb.size(0), 1, 1).to(h.device)  # Initialize pose with zeros [B,1, output_dim]
 
         for i in range(frame_length):
             input  = torch.cat([t_pose, h[:, i:i+1, :]], dim=-1)  # Concatenate pose and hidden state [B, 1, output_dim + H*2]
             output,hidden = self.decoder(input,hidden)  # [B, 1, H]
             normalized_output = self.layer_norm(output) 
-            next_pose = self.fc(normalized_output)  # [B, 1, output_dim]
+            next_pose = self.fc(normalized_output)  # [B, 1, output_dim] 
             pose.append(next_pose)  # Append the predicted pose
             t_pose = next_pose # Update t_pose for the next iteration
         
         out_pose = torch.cat(pose, dim=1)  # Concatenate all predicted poses [B, T, output_dim]
         return out_pose
 
-    def train_loss(self,input, target,mask):
+    def train_loss(self,input, target, mask):
         if torch.isnan(input).any():
             print("NaN detected in input!")
         if torch.isnan(target).any():
             print("NaN detected in target!")
         if torch.isnan(mask).any():
             print("NaN detected in mask!")
+             
         # Compute the mean squared error loss between the reconstructed output and the input data
         mse_loss = nn.MSELoss(reduction="none").to(input.device)  # Use 'none' reduction to compute element-wise loss
 

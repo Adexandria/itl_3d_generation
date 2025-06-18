@@ -1,6 +1,7 @@
 import torch
 import os
 import json
+import datetime
 
 
 class Train:
@@ -18,7 +19,7 @@ class Train:
         best_checkpoint = None
         patience = 0
 
-        for epoch in range(current_epoch, self.num_epochs + current_epoch):
+        for epoch in range(current_epoch, self.num_epochs):
             self.model.train()
             total_loss = 0.0
             print("Starting training from epoch:", epoch)
@@ -37,7 +38,7 @@ class Train:
                 mask = mask.to(self.device)
 
                 # Forward pass
-                reconstructed = self.model(gloss_embedding)
+                reconstructed,p_tf = self.model(gloss_embedding,keypoint,epoch,self.num_epochs+current_epoch)
 
                 # Compute loss
                 loss = self.model.train_loss(reconstructed, keypoint, mask)
@@ -68,7 +69,7 @@ class Train:
                     keypoint = keypoint.to(self.device)
                     mask = mask.to(self.device)
 
-                    reconstructed = self.model(gloss_embedding)
+                    reconstructed = self.model.forward_autoregression(gloss_embedding)
                     val_loss = self.model.evaluation_loss(reconstructed, keypoint, mask)
                     total_val_loss += val_loss.item()
 
@@ -78,37 +79,33 @@ class Train:
             # Save best model checkpoint
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
-                patience = 0
-                save_path = os.path.join(self.out_dir, f"itl_3d_checkpoint_{epoch}.pth")
-                best_checkpoint = save_path
+                
+            save_path = os.path.join(self.out_dir, f"itl_3d_checkpoint_{epoch}.pth")
+            best_checkpoint = save_path
 
-                torch.save({
+            torch.save({
                     'model_state_dict': self.model.state_dict(),
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'epoch': epoch,
                     'loss': avg_loss,
                 }, save_path)
+            print(f"Model saved to {save_path} with validation loss: {avg_val_loss:.4f}")    
 
-                checkpoint_data = {
-                    'checkpoint': save_path,
-                    'epoch': epoch,
-                    'loss': avg_loss,
-                    'validation_loss': avg_val_loss,
-                    'train_dataset': len(self.train_loader.dataset),
-                    'validation_dataset': len(self.validation_loader.dataset)
-                }
+            model_data = {
+                'checkpoint': save_path,
+                'epoch': epoch,
+                'train_loss': avg_loss,
+                'probability_tf': p_tf,
+                'validation_loss': avg_val_loss,
+                'train_dataset': len(self.train_loader.dataset),
+                'validation_dataset': len(self.validation_loader.dataset),
+                'timestamp': datetime.datetime.now().isoformat()
+            }
 
-                if json_file:
-                    with open(json_file, 'a') as f:
-                        json.dump(checkpoint_data, f, indent=4)
+            if json_file:
+                with open(json_file, 'a') as f:
+                    json.dump(model_data, f, indent=4)
 
-                print(f"Model saved to {save_path} with validation loss: {avg_val_loss:.4f}")
-            else:
-                patience += 1
-                print(f"No improvement in validation loss. Patience: {patience}")
-                if patience >= 3:
-                    print("Early stopping triggered.")
-                    break
-
+            
         print("Training complete")
         return best_checkpoint

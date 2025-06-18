@@ -24,7 +24,7 @@ class evaluate_model:
                 keypoint = keypoint.to(self.device)
                 mask = mask.to(self.device)
 
-                reconstructed = self.model(gloss_embedding)
+                reconstructed = self.model.forward_autoregression(gloss_embedding)
                 num_samples += 1
                 avg_loss = self.model.evaluation_loss(reconstructed, keypoint,mask)
                 

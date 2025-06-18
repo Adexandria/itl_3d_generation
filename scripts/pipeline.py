@@ -9,6 +9,7 @@ from pose_dataset import PoseDataset
 from evaluation import evaluate_model
 from train import Train
 import torch.optim as optim
+import random
 
 def collate_fn(batch):
     batch = [item for item in batch if item is not None]  # Filter out None items
@@ -58,6 +59,8 @@ def main():
     optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
     current_epoch = 1
     checkpoint_path = None
+
+    json_file = os.path.join(args.out_dir, 'dataset_info.json')
     if args.checkpoint:
         checkpoint = torch.load(args.checkpoint, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
@@ -71,8 +74,8 @@ def main():
         train_loader = DataLoader(train_ds, batch_size=64, shuffle=True, collate_fn=collate_fn, num_workers=2)
         val_loader = DataLoader(val_ds, batch_size=64, shuffle=False, collate_fn=collate_fn, num_workers=2)
 
-        trainer = Train(model, args.out_dir, train_loader, val_loader, optimizer, num_epochs=20, device=device)
-        checkpoint_path = trainer.run(current_epoch, json_file=os.path.join(args.out_dir, 'dataset_info.json'))
+        trainer = Train(model, args.out_dir, train_loader, val_loader, optimizer, num_epochs=2000, device=device)
+        checkpoint_path = trainer.run(current_epoch=current_epoch, json_file=json_file)
 
         # Load best model for testing
         checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -83,8 +86,9 @@ def main():
 
     print("Evaluating...")
     evaluation_loss = evaluate_model(model, test_loader, device=device)
-    evaluation_loss.run(json_file=os.path.join(args.out_dir, 'dataset_info.json'),name=checkpoint_path)
+    evaluation_loss.run(json_file=json_file,name=checkpoint_path)
 
 if __name__ == "__main__":
     mp.set_start_method('spawn', force=True)
+    random.seed(1,10)
     main()
