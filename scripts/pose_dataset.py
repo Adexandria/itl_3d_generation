@@ -6,7 +6,7 @@ from transformers import BertTokenizer, BertModel
 from pytorch3d import transforms 
 import os  
 
-torch.serialization.register_package(0, lambda x: x.device.type, lambda x, _: x.cpu())
+#torch.serialization.register_package(0, lambda x: x.device.type, lambda x, _: x.cpu())
 
 class PoseDataset(Dataset):
     def __init__(self, gloss_file, device='cpu'):
@@ -20,9 +20,10 @@ class PoseDataset(Dataset):
     def __len__(self):
         return len(self.data)
     
-    def get_glosses(self,gloss):
+    def get_glosses(self, gloss):
         with torch.no_grad():
             tokens = self.tokenizer(gloss, return_tensors='pt').to(self.device)
+            # For single words/short phrases, use [CLS] token embedding
             gloss_embedding = self.bert_model(**tokens).last_hidden_state[:, 0, :] 
         return gloss_embedding[0]
 
@@ -32,7 +33,7 @@ class PoseDataset(Dataset):
             return None
         
         # Extract gloss and frame count from the item
-        gloss = item['text']
+        gloss = item['gloss']
         if gloss is None:
             return None
         
@@ -44,6 +45,26 @@ class PoseDataset(Dataset):
             return None,None
         
         return gloss_embedding, frame_length
+
+    def get_pose(self, gloss):
+        item = self.find_data(self.data, gloss)
+        if item is None:
+            return None
+        
+        pkl_path = item['keypoints']
+        pkl_path = os.path.join(self.path, pkl_path)
+        pkl_path = os.path.normpath(pkl_path)
+
+        # Load SMPL-X keypoints
+        try:
+            with open(pkl_path, 'rb') as f:
+                keypoints = pickle.load(f)  
+        except FileNotFoundError:
+            return None  # Handle missing files gracefully
+        
+        pose_vector = self.__transform_keypoints__(keypoints)
+        pose_vector = torch.as_tensor(pose_vector).to(self.device)
+        return pose_vector
 
     def __getitem__(self, idx):
         gloss = self.data[idx]['gloss']

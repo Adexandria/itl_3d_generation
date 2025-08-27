@@ -6,7 +6,6 @@ class RNN(nn.Module):
     def __init__(self, gloss_dim, output_dim, hidden_dim):
         super().__init__()
         self.pose_dim = output_dim
-        self.layer_norm = nn.LayerNorm(hidden_dim)
         self.initial_pose = nn.Parameter(torch.zeros((1, 1, output_dim)))
         self.encoder = nn.GRU(
             input_size=gloss_dim,
@@ -16,12 +15,18 @@ class RNN(nn.Module):
             dropout=0.2,    
             num_layers=2
         )  
+        self.text_projection = nn.Linear(hidden_dim * 2, hidden_dim)
+        self.encoder_to_decoder = nn.Linear(hidden_dim * 2, hidden_dim)
         # Start token for pose
         self.decoder = nn.GRU(
             input_size= self.pose_dim + hidden_dim * 2,  # Concatenate pose and hidden state
             hidden_size=hidden_dim,
             batch_first=True
         )
+       
+        self.attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=2, dropout=0.1, batch_first=True)
+        self.attention_projection = nn.Linear(hidden_dim * 2, hidden_dim)
+        self.layer_norm = nn.LayerNorm(hidden_dim)
         self.fc = nn.Linear(hidden_dim, output_dim)
 
 
@@ -34,21 +39,38 @@ class RNN(nn.Module):
             print("NaN detected in input!")
 
         # Get the number of time steps
-        T = gloss_emb.size(1) 
+        B,T,_= gloss_emb.shape
         
-        _,h = self.encoder(gloss_emb) #(D*2,B,H) Get the last hidden state from the encoder
-        h = torch.cat((h[-2], h[-1]), dim=-1)  # Concatenate [B, H*2] from both directions
-        h = h.unsqueeze(1).repeat(1, T, 1)  # [B,T,H] Repeat the hidden state for each time step
+        text,text_h = self.encoder(gloss_emb) #(D*2,B,H) Get the last hidden state from the encoder
+        encoder_final = torch.cat((text_h[-2], text_h[-1]), dim=-1)  # Concatenate [B, H*2] from both directions
+        hidden = self.encoder_to_decoder(encoder_final).unsqueeze(0)
+
+        projected_text = self.text_projection(text)  # Project text features to hidden_dim
+
+        progress = epoch / total_epochs  # Progress from 0 to 1
+        k = 10  # Steepness parameter - higher values make the transition sharper
+        p_tf = 1.0 / (1.0 + math.exp(k * (progress - 0.5)))
         
-        # using inverse sigmoid decay
-        p_tf = (total_epochs / (total_epochs + math.exp(epoch/total_epochs))) # i want to start from 1 and slowly reduce to 0. following full teacher force to autorgressive  
-        hidden = None
-        prev_pose = ground_truth[:,:1,:]
+     
+        prev_pose = self.initial_pose.repeat(B, 1, 1).to(text_h.device)  # Initialize pose with zeros [B,1, output_dim]
+        prev_pose = prev_pose + torch.randn_like(prev_pose) * 0.01  # Add small noise to initial pose
         poses = []
+
+    
         for i in range(T):
-            input  = torch.cat([prev_pose, h[:, i:i+1, :]], dim=-1)  # Concatenate pose and hidden state [B, 1, output_dim + H*2]
+            input  = torch.cat([prev_pose, text[:, i:i+1, :]], dim=-1)  # Concatenate pose and hidden state [B, 1, output_dim + H*2]
             output,hidden = self.decoder(input,hidden)  # [B, 1, H]
-            normalized_output = self.layer_norm(output) 
+            hidden_query = hidden.transpose(0, 1)
+            projected_text_i = projected_text[:, i:i+1, :]  # Get the text projection for the current time step
+            context, _ = self.attention(
+            hidden_query, 
+            projected_text_i, 
+            projected_text_i
+            )
+            combined = torch.cat([output, context], dim=-1)  # Concatenate output and context [B, 1, H + H*2]
+            projected = self.attention_projection(combined)  # Project to hidden_dim # Project to hidden_dim
+            final_output = projected + output
+            normalized_output = self.layer_norm(final_output) 
             next_pose = self.fc(normalized_output)  # [B, 1, output_dim] 
             poses.append(next_pose)  # Append the predicted pose
             
@@ -74,19 +96,30 @@ class RNN(nn.Module):
         if torch.isnan(gloss_emb).any():
             print("NaN detected in input!")
 
-        _,h = self.encoder(gloss_emb) #(D*2,B,H) Get the last hidden state from the encoder
-        h = torch.cat((h[-2], h[-1]), dim=-1)  # Concatenate [B, H*2] from both directions
-        h = h.unsqueeze(1).repeat(1, frame_length, 1)  # [B,T,H] Repeat the hidden state for each time step
+        text,text_h = self.encoder(gloss_emb) #(D*2,B,H) Get the last hidden state from the encoder
+        encoder_final = torch.cat((text_h[-2], text_h[-1]), dim=-1)  # Concatenate [B, H*2] from both directions
+        hidden = self.encoder_to_decoder(encoder_final).unsqueeze(0) 
 
+        projected_text = self.text_projection(text)  # Project text features to hidden_dim
         pose = []
-        hidden = None
-        t_pose = self.initial_pose.repeat(gloss_emb.size(0), 1, 1).to(h.device)  # Initialize pose with zeros [B,1, output_dim]
+        t_pose = self.initial_pose.repeat(gloss_emb.size(0), 1, 1).to(text_h.device)  # Initialize pose with zeros [B,1, output_dim]
+        t_pose = t_pose + torch.randn_like(t_pose) * 0.01  # Add small noise to initial pose
 
         for i in range(frame_length):
-            input  = torch.cat([t_pose, h[:, i:i+1, :]], dim=-1)  # Concatenate pose and hidden state [B, 1, output_dim + H*2]
+            input  = torch.cat([t_pose, text[:, i:i+1, :]], dim=-1)  # Concatenate pose and hidden state [B, 1, output_dim + H*2]
             output,hidden = self.decoder(input,hidden)  # [B, 1, H]
-            normalized_output = self.layer_norm(output) 
-            next_pose = self.fc(normalized_output)  # [B, 1, output_dim] 
+            hidden_query = hidden.transpose(0, 1)
+            projected_text_i = projected_text[:, i:i+1, :]  # Get the text projection for the current time step
+            context, _ = self.attention(
+            hidden_query, 
+            projected_text_i, 
+            projected_text_i
+            )
+            combined = torch.cat([output, context], dim=-1)  # Concatenate output and context [B, 1, H + H*2]
+            projected = self.attention_projection(combined)  # Project to hidden_dim # Project to hidden_dim
+            final_output = projected + output
+            normalized_output = self.layer_norm(final_output)
+            next_pose = self.fc(normalized_output)  # [B, 1, output_dim]
             pose.append(next_pose)  # Append the predicted pose
             t_pose = next_pose # Update t_pose for the next iteration
         

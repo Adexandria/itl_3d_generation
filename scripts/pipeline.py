@@ -25,7 +25,8 @@ def collate_fn(batch):
 
     mask = torch.arange(keypoints.size(1))[None, :] < lengths[:, None]
     mask = mask.unsqueeze(-1).repeat(1, 1, keypoints.shape[2])
-    
+
+    gloss_embeddings = gloss_embeddings.unsqueeze(1).repeat(1, keypoints.size(1), 1)
     return gloss_embeddings, keypoints, mask
 
 def main():
@@ -37,6 +38,11 @@ def main():
     args = parser.parse_args() 
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if device.type == 'cuda':
+        torch.cuda.manual_seed_all(42)
+    else:
+        torch.manual_seed(42)
 
     os.makedirs(args.out_dir, exist_ok=True)
     dataset = PoseDataset(args.gloss_file, device)
@@ -57,6 +63,12 @@ def main():
     model = RNN(gloss_dim=768, output_dim=188, hidden_dim=128).to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    
+    # Add learning rate scheduler
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=3, min_lr=1e-6
+    )
+    
     current_epoch = 1
     checkpoint_path = None
 
@@ -65,16 +77,21 @@ def main():
         checkpoint = torch.load(args.checkpoint, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        # Load scheduler state if it exists
+        if 'scheduler_state_dict' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         current_epoch = checkpoint['epoch'] + 1
         print(f"Loaded checkpoint from epoch {current_epoch - 1}")
         checkpoint_path = args.checkpoint
     
     if args.is_train:
         print("Training size:", len(train_ds))
-        train_loader = DataLoader(train_ds, batch_size=64, shuffle=True, collate_fn=collate_fn, num_workers=2)
-        val_loader = DataLoader(val_ds, batch_size=64, shuffle=False, collate_fn=collate_fn, num_workers=2)
+        # Adjust batch size based on dataset size and memory constraints
+        
+        train_loader = DataLoader(train_ds, batch_size=16, shuffle=True, collate_fn=collate_fn, num_workers=2)
+        val_loader = DataLoader(val_ds, batch_size=16, shuffle=False, collate_fn=collate_fn, num_workers=2)
 
-        trainer = Train(model, args.out_dir, train_loader, val_loader, optimizer, num_epochs=2000, device=device)
+        trainer = Train(model, args.out_dir, train_loader, val_loader, optimizer, scheduler, num_epochs=201, device=device)
         checkpoint_path = trainer.run(current_epoch=current_epoch, json_file=json_file)
 
         # Load best model for testing
@@ -82,7 +99,7 @@ def main():
         model.load_state_dict(checkpoint['model_state_dict'])
 
     print("Testing size:", len(test_ds))
-    test_loader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=collate_fn, num_workers=2)
+    test_loader = DataLoader(test_ds, batch_size=16, shuffle=False, collate_fn=collate_fn, num_workers=2)
 
     print("Evaluating...")
     evaluation_loss = evaluate_model(model, test_loader, device=device)
@@ -90,5 +107,6 @@ def main():
 
 if __name__ == "__main__":
     mp.set_start_method('spawn', force=True)
-    random.seed(1,10)
+    random.seed(42)
+
     main()

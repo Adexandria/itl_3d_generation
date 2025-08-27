@@ -7,6 +7,7 @@ import numpy as np
 from rnn import RNN
 from tqdm import tqdm
 from pose_dataset import PoseDataset
+import matplotlib.pyplot as plt
 from hamer.configs import CACHE_DIR_HAMER
 from hamer.models import download_models, load_hamer, DEFAULT_CHECKPOINT
 from hamer.utils.renderer import Renderer
@@ -49,28 +50,33 @@ class MeshGenerator:
 
         pose_dataset = PoseDataset(gloss_file=self.gloss_file, device=self.device)
 
-        gloss_embedding,frame_length =  pose_dataset.get_dataset(self.text)
+        #pose = pose_dataset.get_pose(self.text)
+
+        gloss_embedding, frame_length = pose_dataset.get_dataset(self.text)
+
+        if gloss_embedding is None or frame_length is None:
+            raise ValueError(f"Gloss embedding or frame length not found for gloss: {self.text}")
+
 
         gloss_embedding = gloss_embedding.unsqueeze(0).unsqueeze(1).repeat(1, frame_length, 1) 
 
         print(f"Gloss embedding shape: {gloss_embedding.shape}, Frame length: {frame_length}")
-        
-        output = itl3d_model.forward_single(gloss_embedding,frame_length)
+
+        output = itl3d_model.forward_autoregression(gloss_embedding)
+
+        #self.compare_joint_positions(output, pose)
 
         transformed_output = self.transform_pose(output)
         
-        output = smplx_model(betas=transformed_output['betas'], expression=transformed_output['expression'],
+        output = smplx_model(betas=transformed_output['betas'],
                           global_orient = transformed_output['go_aa'],
                           body_pose = transformed_output['bp_aa'],
-                          jaw_pose = transformed_output['jaw_pose'],
                           left_hand_pose = transformed_output['left_hand_pose'],
                           right_hand_pose=transformed_output['right_hand_pose'],
-                          leye_pose = transformed_output['left_eye_pose'],
-                          reye_pose = transformed_output['right_eye_pose'],
                    return_verts=True)
         
         vertices = output.vertices.detach().cpu().numpy()
-
+        
         out_path = os.path.join(self.out_folder, self.text)
         
         os.makedirs(out_path, exist_ok=True)
@@ -79,7 +85,7 @@ class MeshGenerator:
 
         print("camera shape", camera.shape)
 
-        B = frame_length
+        B = transformed_output['betas'].shape[0]
 
         print(f'Number of samples: {B}')
 
@@ -92,6 +98,7 @@ class MeshGenerator:
 
         for i in tqdm(range(B),desc="Generating meshes and images"):
             verts_i = vertices[i]  # (V,3)
+            print(f"Frame {i}: first 5 verts:\n", verts_i[:5])
             print(f'vertices {i}', verts_i.shape)
 
             cam_i = camera_ts[i]
@@ -134,9 +141,9 @@ class MeshGenerator:
 
 
     def create_smplx_model(self):
-        model = smplx.create(model_path = "/kaggle/input/smplx-model", model_type='smplx',
-                         gender='female',use_pca=False,num_betas=10,num_expression_coeffs=10,
-                         ext='npz')
+        model = smplx.create(model_path = "/kaggle/working/hamer", model_type='smplh',
+                         gender='female',use_pca=False,num_betas=10,
+                         ext='pkl')
         return model
     
     def create_ITL3D_model(self,checkpoint,device='cpu'):
@@ -147,22 +154,51 @@ class MeshGenerator:
         model.load_state_dict(checkpoint['model_state_dict'])
         return model
     
+    def compare_joint_positions(self, reconstructed_pose, original_pose):
+        if reconstructed_pose is None or original_pose is None:
+            raise ValueError("Reconstructed or original pose is None")
+        
+        if reconstructed_pose.shape != original_pose.shape:
+           reconstructed_pose = reconstructed_pose.squeeze(0) 
+
+        reconstruct_joints = reconstructed_pose[:,20:185]
+        ground_truth_joints = original_pose[:,20:185]
+
+        num_joints = reconstruct_joints.shape[1] // 3
+
+        reconstruct_joints = reconstruct_joints.view(reconstructed_pose.shape[0], num_joints, 3)
+        ground_truth_joints = ground_truth_joints.view(original_pose.shape[0], num_joints, 3)
+
+        frame_errors = torch.norm(reconstruct_joints - ground_truth_joints, dim=2)
+        frame_mpjpe = frame_errors.mean(dim=1)
+
+        overall_mpjpe = frame_errors.mean()
+
+        print(f"Overall MPJPE: {overall_mpjpe.item():.4f}")
+
+        vals = frame_mpjpe.detach().cpu().numpy()
+        plt.plot(vals)
+        plt.xlabel("Frame index")
+        plt.ylabel("MPJPE")
+        plt.title("Per-frame Mean Joint Error")
+        plt.show()
+
     def transform_pose(self, reconstructed_pose):
         if reconstructed_pose is None or torch.numel(reconstructed_pose) == 0:
             raise ValueError("Reconstructed pose is empty or None")
-        reconstructed_pose = reconstructed_pose.squeeze(0)  # Ensure it has the correct shape
+        reconstructed_pose = reconstructed_pose.squeeze(0)
         print(f"Reconstructed pose shape: {reconstructed_pose.shape}")
         betas            = reconstructed_pose[:, :10]
         expression       = reconstructed_pose[:, 10:20]
         go_aa            = reconstructed_pose[:, 20:23]
         bp_aa            = reconstructed_pose[:, 23:86]
         jaw_pose         = reconstructed_pose[:, 86:89]
-        left_hand_pose   = reconstructed_pose[:, 89:134]
-        right_hand_pose  = reconstructed_pose[:, 134:179]
-        left_eye_pose    = reconstructed_pose[:, 179:182]
-        right_eye_pose   = reconstructed_pose[:, 182:185]
+        left_eye_pose     = reconstructed_pose[:, 89:92]
+        right_eye_pose    = reconstructed_pose[:, 92:95]
+        left_hand_pose    = reconstructed_pose[:, 95:140]
+        right_hand_pose   = reconstructed_pose[:, 140:185]
         camera_ts        = reconstructed_pose[:, 185:188]
-        
+
         if betas.ndim is None or torch.numel(betas) == 0:
             print("Betas tensor is empty or None")
         
@@ -184,6 +220,7 @@ class MeshGenerator:
             print("Right eye pose tensor is empty or None")
         if camera_ts.ndim is None or torch.numel(camera_ts) == 0:
             print("Camera tensor is empty or None") 
+        
         return {
             'betas': betas,
             'expression': expression,
